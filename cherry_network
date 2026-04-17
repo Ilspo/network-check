@@ -1,51 +1,44 @@
 #!/bin/bash
 
-# Цвета для удобства
+# Цвета для терминала
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo -e "${YELLOW}=== GotBot VPN Infrastructure Checker ===${NC}"
+echo -e "${YELLOW}=== Cherry Servers Network Fixer for GotBot VPN ===${NC}"
 
-# 1. Запрос данных
-read -p "Введи новый Floating IP: " NEW_IP
-read -p "Введи Gateway (обычно 192.168.0.1): " GATEWAY
+# Интерактивный ввод данных
+read -p "Введите ваш Floating IP (новый адрес): " NEW_IP
+read -p "Введите Gateway (обычно 192.168.0.1): " GATEWAY
 INTERFACE="eth0"
 
-echo -e "\n${YELLOW}[1/4] Проверка наличия IP на интерфейсе...${NC}"
+# 1. Привязка IP к интерфейсу
+echo -e "\n${YELLOW}[1/3] Проверка сетевого адреса...${NC}"
 if ip addr show $INTERFACE | grep -q "$NEW_IP"; then
-    echo -e "${GREEN}✅ IP $NEW_IP уже привязан к $INTERFACE${NC}"
+    echo -e "${GREEN}✅ IP $NEW_IP уже на интерфейсе.${NC}"
 else
-    echo -e "${RED}❌ IP $NEW_IP не найден на интерфейсе.${NC}"
-    echo -e "Исправляю: привязываю IP..."
-    ip addr add $NEW_IP/32 dev $INTERFACE
+    echo -e "Добавляю IP $NEW_IP на $INTERFACE..."
+    sudo ip addr add $NEW_IP/32 dev $INTERFACE
 fi
 
-echo -e "\n${YELLOW}[2/4] Проверка маршрутизации (Table 100)...${NC}"
-RULE_EXISTS=$(ip rule show | grep "$NEW_IP" | grep "lookup 100")
-if [ -z "$RULE_EXISTS" ]; then
-    echo -e "${RED}❌ Правила маршрутизации отсутствуют.${NC}"
-    echo -e "Исправляю: создаю таблицу 100 и правила..."
-    ip route add $GATEWAY dev $INTERFACE table 100 2>/dev/null
-    ip route add default via $GATEWAY dev $INTERFACE table 100 2>/dev/null
-    ip rule add from $NEW_IP table 100
+# 2. Настройка маршрутов (Table 100)
+echo -e "\n${YELLOW}[2/3] Настройка таблицы маршрутизации...${NC}"
+# Проверяем наличие таблицы и правил, чтобы не дублировать
+if ip rule show | grep -q "from $NEW_IP lookup 100"; then
+    echo -e "${GREEN}✅ Маршруты уже настроены.${NC}"
 else
-    echo -e "${GREEN}✅ Правила маршрутизации активны.${NC}"
+    echo -e "Создаю правила для таблицы 100..."
+    sudo ip route add $GATEWAY dev $INTERFACE table 100 2>/dev/null
+    sudo ip route add default via $GATEWAY dev $INTERFACE table 100 2>/dev/null
+    sudo ip rule add from $NEW_IP table 100
 fi
 
-echo -e "\n${YELLOW}[3/4] Проверка внешней связности...${NC}"
-if ping -c 3 -I $NEW_IP 8.8.8.8 &> /dev/null; then
-    echo -e "${GREEN}✅ Пинг через $NEW_IP проходит! Сеть настроена верно.${NC}"
-else
-    echo -e "${RED}❌ Пинга нет. Проверь привязку IP в панели Cherry Servers.${NC}"
-fi
-
-echo -e "\n${YELLOW}[4/4] Настройка автозагрузки (Systemd)...${NC}"
+# 3. Фиксация в Systemd (Автозагрузка)
+echo -e "\n${YELLOW}[3/3] Настройка автозагрузки...${NC}"
 SERVICE_FILE="/etc/systemd/system/floating-ip.service"
-if [ ! -f "$SERVICE_FILE" ]; then
-    echo -e "Создаю сервис автозагрузки..."
-    cat <<EOF > $SERVICE_FILE
+
+cat <<EOF | sudo tee $SERVICE_FILE > /dev/null
 [Unit]
 Description=Setup Floating IP Routing for Cherry Servers
 After=network-online.target
@@ -54,6 +47,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/usr/bin/sleep 5
 ExecStart=/sbin/ip addr add $NEW_IP/32 dev $INTERFACE
 ExecStart=/sbin/ip route add $GATEWAY dev $INTERFACE table 100
 ExecStart=/sbin/ip route add default via $GATEWAY dev $INTERFACE table 100
@@ -62,15 +56,15 @@ ExecStart=/sbin/ip rule add from $NEW_IP table 100
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable floating-ip.service
-    echo -e "${GREEN}✅ Автозагрузка настроена.${NC}"
+
+sudo systemctl daemon-reload
+sudo systemctl enable floating-ip.service
+echo -e "${GREEN}✅ Сервис создан и добавлен в автозагрузку.${NC}"
+
+# Проверка пинга через конкретный IP
+echo -e "\n${YELLOW}Проверка связи через новый IP...${NC}"
+if ping -I $NEW_IP -c 3 8.8.8.8 &> /dev/null; then
+    echo -e "${GREEN}🚀 ПОБЕДА! Сеть полностью готова к работе.${NC}"
 else
-    echo -e "${GREEN}✅ Сервис автозагрузки уже существует.${NC}"
+    echo -e "${RED}❌ Пинг не прошел. Проверьте привязку IP в панели хостинга.${NC}"
 fi
-
-echo -e "\n${YELLOW}=== Финальный статус служб ===${NC}"
-systemctl is-active --quiet caddy && echo -e "Caddy: ${GREEN}Running${NC}" || echo -e "Caddy: ${RED}Stopped/Not Installed${NC}"
-docker ps | grep -q remnanode && echo -e "Xray (Remnanode): ${GREEN}Running${NC}" || echo -e "Xray (Remnanode): ${RED}Stopped${NC}"
-
-echo -e "\n${YELLOW}Всё готово! Наслаждайся стабильностью.${NC}"
