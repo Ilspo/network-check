@@ -8,9 +8,9 @@ NC='\033[0m' # No Color
 
 echo -e "${YELLOW}=== GotBot VPN Infrastructure Checker ===${NC}"
 
-# 1. Запрос данных
-read -p "Введи новый Floating IP: " NEW_IP
-read -p "Введи Gateway (обычно 192.168.0.1): " GATEWAY
+# 1. Запрос данных (Берем ввод напрямую с терминала, чтобы curl | bash не ломался)
+read -p "Введи новый Floating IP: " NEW_IP </dev/tty
+read -p "Введи Gateway (обычно 192.168.0.1): " GATEWAY </dev/tty
 INTERFACE="eth0"
 
 echo -e "\n${YELLOW}[1/4] Проверка наличия IP на интерфейсе...${NC}"
@@ -19,7 +19,7 @@ if ip addr show $INTERFACE | grep -q "$NEW_IP"; then
 else
     echo -e "${RED}❌ IP $NEW_IP не найден на интерфейсе.${NC}"
     echo -e "Исправляю: привязываю IP..."
-    ip addr add $NEW_IP/32 dev $INTERFACE
+    sudo ip addr add $NEW_IP/32 dev $INTERFACE
 fi
 
 echo -e "\n${YELLOW}[2/4] Проверка маршрутизации (Table 100)...${NC}"
@@ -27,9 +27,9 @@ RULE_EXISTS=$(ip rule show | grep "$NEW_IP" | grep "lookup 100")
 if [ -z "$RULE_EXISTS" ]; then
     echo -e "${RED}❌ Правила маршрутизации отсутствуют.${NC}"
     echo -e "Исправляю: создаю таблицу 100 и правила..."
-    ip route add $GATEWAY dev $INTERFACE table 100 2>/dev/null
-    ip route add default via $GATEWAY dev $INTERFACE table 100 2>/dev/null
-    ip rule add from $NEW_IP table 100
+    sudo ip route add $GATEWAY dev $INTERFACE table 100 2>/dev/null
+    sudo ip route add default via $GATEWAY dev $INTERFACE table 100 2>/dev/null
+    sudo ip rule add from $NEW_IP table 100
 else
     echo -e "${GREEN}✅ Правила маршрутизации активны.${NC}"
 fi
@@ -43,9 +43,9 @@ fi
 
 echo -e "\n${YELLOW}[4/4] Настройка автозагрузки (Systemd)...${NC}"
 SERVICE_FILE="/etc/systemd/system/floating-ip.service"
-if [ ! -f "$SERVICE_FILE" ]; then
-    echo -e "Создаю сервис автозагрузки..."
-    cat <<EOF > $SERVICE_FILE
+
+echo -e "Обновляю сервис автозагрузки..."
+cat <<EOF | sudo tee $SERVICE_FILE > /dev/null
 [Unit]
 Description=Setup Floating IP Routing for Cherry Servers
 After=network-online.target
@@ -54,6 +54,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=/usr/bin/sleep 5
 ExecStart=/sbin/ip addr add $NEW_IP/32 dev $INTERFACE
 ExecStart=/sbin/ip route add $GATEWAY dev $INTERFACE table 100
 ExecStart=/sbin/ip route add default via $GATEWAY dev $INTERFACE table 100
@@ -62,15 +63,15 @@ ExecStart=/sbin/ip rule add from $NEW_IP table 100
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable floating-ip.service
-    echo -e "${GREEN}✅ Автозагрузка настроена.${NC}"
-else
-    echo -e "${GREEN}✅ Сервис автозагрузки уже существует.${NC}"
-fi
+
+sudo systemctl daemon-reload
+sudo systemctl enable floating-ip.service
+sudo systemctl start floating-ip.service
+echo -e "${GREEN}✅ Автозагрузка настроена.${NC}"
+
 
 echo -e "\n${YELLOW}=== Финальный статус служб ===${NC}"
 systemctl is-active --quiet caddy && echo -e "Caddy: ${GREEN}Running${NC}" || echo -e "Caddy: ${RED}Stopped/Not Installed${NC}"
-docker ps | grep -q remnanode && echo -e "Xray (Remnanode): ${GREEN}Running${NC}" || echo -e "Xray (Remnanode): ${RED}Stopped${NC}"
+docker ps 2>/dev/null | grep -q remnanode && echo -e "Xray (Remnanode): ${GREEN}Running${NC}" || echo -e "Xray (Remnanode): ${RED}Stopped/Not Installed${NC}"
 
 echo -e "\n${YELLOW}Всё готово! Наслаждайся стабильностью.${NC}"
